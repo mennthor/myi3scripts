@@ -36,9 +36,20 @@ import cPickle as pickle
 from glob import glob
 import numpy as np
 import healpy as hp
+from scipy.optimize import brentq
 
 from icecube import dataclasses, millipede, astro
 from icecube.dataio import I3File
+
+
+def DecRaToThetaPhi(dec, ra):
+    """ Convenience wrapper for coordinate definition above """
+    return np.pi / 2. - dec, ra
+
+
+def ThetaPhiToDecRa(th, phi):
+    """ Convenience wrapper for coordinate definition above """
+    return np.pi / 2. - th, phi
 
 
 def smooth_type(x):
@@ -52,7 +63,7 @@ def smooth_type(x):
     return x
 
 
-def rotate_to_equ_pix(NSIDE, mjd, pix):
+def rotate_to_equ_pix(NSIDE, m, bf_ra, bf_dec, mjd, npix=1000):
     """
     Uses a set of pixel IDs for a given resolution NSIDE and transforms local
     to equatorial coordinates. Then returns the new map indices where now the
@@ -60,37 +71,69 @@ def rotate_to_equ_pix(NSIDE, mjd, pix):
     We can then just use the map as is for equatorial coords by simply
     tranforming ``dec=pi/2-theta``.
 
-    Note: This introduces an error in the order of a pixel width, if the
-    transformed new coordinates don't fall on exact pixel centers. For higher
-    resolutions this is negliable. The advantage is, that we don't have to
-    convert the coordinates every time we want use the equatorial map, but need
-    only to do the simple ``dec = pi / 2 - theta`` transformation.
+    Note: We have to do the process backwards in order to save time and we have
+    interpolate values, because in when rotating in declination, we don't map
+    bivariate as the number of pixels in a dec band varies with declination.
+    So we select 1000 pixels (saves time) around the best fit (approx. what is
+    hardcoded in the scan scripts) in exact pixel equatorial coordinates and
+    rotate them back to local coordinates. Then we get the interpolated local
+    map values for these pixels and store them in the equatorial map.
+
+    The advantage is, that we don't have to convert the coordinates every time
+    we want use the equatorial map, but need only to do the simple
+    ``dec = pi / 2 - theta`` transformation by using the transformed maps.
 
     Parameters
     ----------
     NSIDE : int
         Healpy map resolution.
+    m : array-like
+        Healpy map in local coordinates.
+    bf_ra, bf_dec : float
+        Best fit equ positions around which new pixels are selected, in radian.
     mjd : float
         Modified Julian date of the event needed to transform coordinates.
-    pix : array-like, int
-        Pixel indices to transform to new coordinates.
+    npix : int, optional
+        How many pixels around the best fit to choose, only to save time.
+        Default value mimics approximatly the HESE scan scripts. (Default: 1000)
 
     Returns
     -------
     pix : array-like
         New pixel indices, so that ``dec=pi/2-theta`` and ``phi=ra``.
+    vals : array-like
+        Map values to fill at the pix indices.
     """
-    pix = np.atleast_1d(pix)
-    npix = len(np.unique(pix))
+    NPIX = hp.nside2npix(NSIDE)
+    if NPIX <= npix:
+        # If we don't have enough pixels to select, select the whole map
+        pix = np.arange(NPIX)
+    else:
+        # Select npix pixels around the best fit
+        bf_th, bf_phi = DecRaToThetaPhi(bf_dec, bf_ra)
+        bf_vec = hp.ang2vec(bf_th, bf_phi)
+
+        def f(rad):
+            """ Find radius, where query_disc selects npix. """
+            cur_npix = len(hp.query_disc(NSIDE, bf_vec, np.deg2rad(rad),
+                                         inclusive=False))
+            return npix - cur_npix
+
+        # Select using the optimized radius for npix pixels
+        rad = brentq(f=f, a=0., b=2 * np.pi)
+        pix = hp.query_disc(NSIDE, bf_vec, rad)
+        print(u"Selected {} pixels within {:.2f}° ".fromat(len(pix), rad) +
+              "around best fit.")
+
+    # Make accurate ra, dec coordinates from selected pixels
     th, phi = hp.pix2ang(NSIDE, pix)
-    ra, dec = astro.dir_to_equa(zenith=th, azimuth=phi, mjd=mjd)
-    # Convert back to healpy map coordinate ranges and get new pixel indices
-    th, phi = np.pi / 2. - dec, ra
-    pix = hp.ang2pix(NSIDE, theta=th, phi=phi)
-    if len(np.unique(pix)) != npix:
-        raise RuntimeError("Rotation is not bivariate, possibly due to a " +
-                           "too coarse pixelization.")
-    return pix
+    dec, ra = ThetaPhiToDecRa(th, phi)
+
+    # Transform to local coordinates and get interpolated map values to avoid
+    # non-bivariat mapping of discrete pixels
+    zen, azi = astro.equa_to_dir(ra=ra, dec=dec, mjd=mjd)
+    vals = hp.get_interp_val(m, zen, azi)
+    return pix, vals
 
 
 def smooth_and_norm(logl_map, smooth_sigma):
@@ -172,12 +215,8 @@ map_info = {"NSIDES": [], "pixels": []}
 
 # Start with the lowest possible resolution
 logl_map = np.zeros(hp.nside2npix(1), dtype=float)
-
-# This is a switch used, if map coord transformation fails for coarse
-# resolutions. For speed reasons, pixels are transformed for the scanned pix
-# only. If this fails (eg. NSIDE=8) then in the next step all pixels are tried
-# to transform, which takes usually longer but should work then.
-trafo_next = False
+if coord == "equ":
+    equ_map = np.zeros(hp.nside2npix(1), dtype=float)
 
 # Loop through files and create the healpy array. The map is build up to the
 # higest scan resolution. All others are scaled up pixel-wise
@@ -185,6 +224,7 @@ print("")
 print("Input folder is:\n  {}".format(folder))
 for i, fi in enumerate(f):
     NSIDE = NSIDES[i]
+    NPIX = hp.nside2npix(NSIDE)
     print("Working on file: {}".format(fnames[i]))
     print("  Resolution is: {}".format(NSIDE))
 
@@ -206,7 +246,7 @@ for i, fi in enumerate(f):
         ev_header["event_id"] = event_id
         ev_header["mjd"] = mjd
 
-    # Update maps
+    # Update local map
     map_i, pix_ids = [], []
     while i3f.more():
         frame = i3f.pop_physics()
@@ -218,68 +258,61 @@ for i, fi in enumerate(f):
         pix_ids.append(pix_id)
     i3f.close()
 
+    # If we are at the lowest resolution we should have gotten all pixels
+    if (i == 0) and not (len(pix_ids) != NPIX):
+        raise ValueError("Lowest resolution scan doesn't have enough pixels " +
+                         "to fill a full map.")
+
     # Update verified map info
     map_info["NSIDES"].append(NSIDE)
     map_info["pixels"].append(pix_ids)
 
-    # Set +-inf or nans to the smallest valid value to get correct BF values
+    # Set +-inf or nans to the smallest valid value to get correct best fit
     map_i = np.array(map_i)
     pix_ids = np.array(pix_ids)
     valid = np.isfinite(map_i)
     map_i[~valid] = np.amin(map_i[valid])
 
-    # Keep track of the local best fit pixel before a possible rotation
+    # Keep track of the local coordinate best fit pixel
     bf_pix = pix_ids[np.argmax(map_i)]
     bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
     map_info["bf_loc"] = {"azi": bf_phi, "zen": bf_th, "pix": bf_pix}
     print("  Current best fit local: " +
-          u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.rad2deg(bf_phi),
-                                                     np.rad2deg(bf_th),
-                                                     bf_pix))
+          u"azi={:.2f}°, zen={:.2f}°, pix={}".format(
+              np.rad2deg(bf_phi), np.rad2deg(bf_th), bf_pix))
+
+    # Upscale and update local coord map. Keep the values invariant (power=0)
+    logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
+    logl_map[pix_ids] = map_i
 
     # If we want equatorial coordinates, transform to new indices
     if coord == "equ":
-        # If coord trafo previously failed, try again with all pixels now
-        if trafo_next:
-            # First we need to build a whole map if we use all pixels
-            map_ = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
-            map_[pix_ids] = map_i
-            map_i = map_
-            # Now we select all pixels from the full map to transform
-            pix_ids = np.arange(hp.nside2npix(NSIDE))
-
-        # Transform coordinates per pixel for the current map
         print("  Transform {} ".format(len(pix_ids)) +
               "pixels to equatorial coordinates.")
-        try:
-            trafo_next = False
-            pix_ids = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
-        except RuntimeError:
-            print("  Pixelization is too coarse. Try with all pixels in " +
-                  "next iteration")
-            trafo_next = True
-            # But if we are already in the best resolution we have a problem
-            if NSIDE == NSIDES[-1]:
-                raise RuntimeError("Rotation is not bivariate, possibly due " +
-                                   "to a too coarse pixelization. No higher " +
-                                   "resolution seems available, so trafo " +
-                                   "doesn't work for this scan.")
+
+        # Get best fit exact trafo
+        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
+                                          mjd=mjd)
+
+        # If in the first iteration, select all pixels to build the base map
+        if NSIDE == NSIDES[0]:
+            npix = NPIX + 1
         else:
-            # Also update accurate best fit in equatorial coordinates
-            bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
-                                              mjd=mjd)
+            npix = 1000
 
-            bf_pix = rotate_to_equ_pix(NSIDE, mjd, bf_pix)[0]
-            assert bf_pix == pix_ids[np.argmax(map_i)]
-            map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0],
-                                  "pix": bf_pix}
-            print("    Current best fit equ: " +
-                  u"ra={:.2f}°, dec={:.2f}°, pix={}".format(
-                      np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
+        pix_ids, map_vals = rotate_to_equ_pix(NSIDE, logl_map, bf_ra, bf_dec,
+                                              mjd, npix=npix)
 
-    # Upscale and update map. Keep the vaues invariant (power=0)
-    logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
-    logl_map[pix_ids] = map_i
+        # Upscale and update map. Keep the vaues invariant (power=0)
+        equ_map = hp.ud_grade(map_in=equ_map, nside_out=NSIDE, power=0)
+        equ_map[pix_ids] = map_vals
+
+        bf_pix = pix_ids[np.argmax(map_vals)]
+        map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
+        print("    Current best fit equ: " +
+              u"ra={:.2f}°, dec={:.2f}°, pix={}".format(
+                  np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
+
 
 print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
@@ -290,10 +323,10 @@ print("        Processed pixels: [{}].".format(
 if coord == "equ":
     _pix = np.argmax(logl_map)
     _th, _phi = hp.pix2ang(NSIDE, _pix)
-    _dec = np.pi / 2. - _th
+    _dec, _ra = ThetaPhiToDecRa(_th, _phi)
     assert _pix == map_info["bf_equ"]["pix"]
     # Rotation should not introduce errors > 2 * res ~ inside 2 pix
-    assert np.isclose(_phi, map_info["bf_equ"]["ra"],
+    assert np.isclose(_ra, map_info["bf_equ"]["ra"],
                       atol=2 * hp.nside2resol(NSIDE))
     assert np.isclose(_dec, map_info["bf_equ"]["dec"],
                       atol=2 * hp.nside2resol(NSIDE))
