@@ -173,6 +173,12 @@ map_info = {"NSIDES": [], "pixels": []}
 # Start with the lowest possible resolution
 logl_map = np.zeros(hp.nside2npix(1), dtype=float)
 
+# This is a switch used, if map coord transformation fails for coarse
+# resolutions. For speed reasons, pixels are transformed for the scanned pix
+# only. If this fails (eg. NSIDE=8) then in the next step all pixels are tried
+# to transform, which takes usually longer but should work then.
+trafo_next = False
+
 # Loop through files and create the healpy array. The map is build up to the
 # higest scan resolution. All others are scaled up pixel-wise
 print("")
@@ -231,23 +237,47 @@ for i, fi in enumerate(f):
                                                      np.rad2deg(bf_th),
                                                      bf_pix))
 
-    # If we want equatorial coordinates, transform to new indices first
+    # If we want equatorial coordinates, transform to new indices
     if coord == "equ":
+        # If coord trafo previously failed, try again with all pixels now
+        if trafo_next:
+            # First we need to build a whole map if we use all pixels
+            map_ = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
+            map_[pix_ids] = map_i
+            map_i = map_
+            # Now we select all pixels from the full map to transform
+            pix_ids = np.arange(hp.nside2npix(NSIDE))
+
+        # Transform coordinates per pixel for the current map
         print("  Transform {} ".format(len(pix_ids)) +
               "pixels to equatorial coordinates.")
-        pix_ids = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
-        # Also update accurate best fit in equatorial coordinates
-        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
-                                          mjd=mjd)
-        bf_pix = rotate_to_equ_pix(NSIDE, mjd, bf_pix)[0]
-        assert bf_pix == pix_ids[np.argmax(map_i)]
-        map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
-        print("    Current best fit equ: " +
-              u"ra={:.2f}°, dec={:.2f}°, pix={}".format(np.rad2deg(bf_ra)[0],
-                                                        np.rad2deg(bf_dec)[0],
-                                                        bf_pix))
+        try:
+            trafo_next = False
+            pix_ids = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
+        except RuntimeError:
+            print("  Pixelization is too coarse. Try with all pixels in " +
+                  "next iteration")
+            trafo_next = True
+            # But if we are already in the best resolution we have a problem
+            if NSIDE == NSIDES[-1]:
+                raise RuntimeError("Rotation is not bivariate, possibly due " +
+                                   "to a too coarse pixelization. No higher " +
+                                   "resolution seems available, so trafo " +
+                                   "doesn't work for this scan.")
+        else:
+            # Also update accurate best fit in equatorial coordinates
+            bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
+                                              mjd=mjd)
 
-    # Upscale and update map, not smoothing anything (power=0)
+            bf_pix = rotate_to_equ_pix(NSIDE, mjd, bf_pix)[0]
+            assert bf_pix == pix_ids[np.argmax(map_i)]
+            map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0],
+                                  "pix": bf_pix}
+            print("    Current best fit equ: " +
+                  u"ra={:.2f}°, dec={:.2f}°, pix={}".format(
+                      np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
+
+    # Upscale and update map. Keep the vaues invariant (power=0)
     logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
     logl_map[pix_ids] = map_i
 
@@ -264,9 +294,9 @@ if coord == "equ":
     assert _pix == map_info["bf_equ"]["pix"]
     # Rotation should not introduce errors > 2 * res ~ inside 2 pix
     assert np.isclose(_phi, map_info["bf_equ"]["ra"],
-                      atol=2*hp.nside2resol(NSIDE))
+                      atol=2 * hp.nside2resol(NSIDE))
     assert np.isclose(_dec, map_info["bf_equ"]["dec"],
-                      atol=2*hp.nside2resol(NSIDE))
+                      atol=2 * hp.nside2resol(NSIDE))
 else:
     _pix = np.argmax(logl_map)
     _th, _phi = hp.pix2ang(NSIDE, _pix)
@@ -284,7 +314,7 @@ if smooth > 0.:
 # Plug in for default filename if no other was given
 outf = outf.format(run_id, event_id)
 if outfmt == "npy":
-    print("  Format is 'npy', so only the map array is saved.")
+    print("Format is 'npy', so only the map array is saved.")
     fname = outf if outf.endswith(".npy") else outf + "." + outfmt
     np.save(fname, np.array(logl_map))
 else:
@@ -301,5 +331,4 @@ else:
         fname = outf if outf.endswith(".pickle") else outf + "." + outfmt
         pickle.dump(out_dict, open(fname, "w"))
 
-print("")
 print("Done. Saved map and info to:\n  {}".format(fname))
