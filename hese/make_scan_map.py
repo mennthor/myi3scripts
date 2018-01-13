@@ -152,7 +152,7 @@ parser.add_argument("--smooth", type=smooth_type, default=0.,
 args = parser.parse_args()
 
 folder = os.path.abspath(args.folder)
-outf = os.path.abspath(args.outf)
+outf = os.path.abspath(os.path.expandvars(os.path.expanduser(args.outf)))
 outfmt = args.outfmt
 coord = args.coord
 smooth = args.smooth
