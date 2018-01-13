@@ -287,8 +287,7 @@ for i, fi in enumerate(f):
     # If we want equatorial coordinates, transform to new indices
     # Note: This iterative procedure only saves time, because it avoids
     # transforming the final high res map, which is slow with astro. This is not
-    # a bad approximation because the major part of the map only has low res
-    # information anyway.
+    # a approximation as long as more than the original scan pixels are selected
     if coord == "equ":
         # Get best fit exact trafo
         bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
@@ -299,7 +298,10 @@ for i, fi in enumerate(f):
             npix = NPIX + 1
             print("  Transform all pixels to equatorial coordinates.")
         else:
-            npix = 1000
+            # This must be larger than the number of original HESE subscan
+            # pixels to be exact, which is currently eyeballed to < 1000.
+            # If all pixel shall be used (takes very long) use npix = NPIX + 1
+            npix = NPIX + 1
             print("  Transform {} ".format(npix) +
                   "pixels to equatorial coordinates.")
 
@@ -323,26 +325,38 @@ print("        Processed pixels: [{}].".format(
     ", ".join("{:d}".format(len(i)) for i in map_info["pixels"])))
 
 # Check best fit sanity
-_pix = np.argmax(logl_map)
-_th, _phi = hp.pix2ang(NSIDE, _pix)
-assert _pix == map_info["bf_loc"]["pix"]
-assert _phi == map_info["bf_loc"]["azi"]
-assert _th == map_info["bf_loc"]["zen"]
 if coord == "equ":
-    # Only save one map in the end
+    # Only save equatorial map in the end
     logl_map = equ_map
+    # Get best fit values from map and compare to accurate trafo
+    bf_pix = np.argmax(logl_map)
+    bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
+    bf_dec, bf_ra = ThetaPhiToDecRa(bf_th, bf_phi)
+    # Get best accurate best fit to pixel best fit distance
+    ra0, dec0 = map_info["bf_equ"]["ra"], map_info["bf_equ"]["dec"]
+    cos_dist = np.clip((np.cos(bf_ra - ra0) * np.cos(bf_dec) * np.cos(dec0) +
+                        np.sin(bf_dec) * np.sin(dec0)), -1., 1.)
+    dist = np.arccos(cos_dist)
 
-    _pix = np.argmax(logl_map)
-    _th, _phi = hp.pix2ang(NSIDE, _pix)
+    # Get max neighbour distance to get max neighbour distance = allowed error
+    _th, _phi = hp.pix2ang(NSIDES[-1], hp.get_all_neighbours(
+        nside=NSIDES[-1], theta=bf_th, phi=bf_phi))
     _dec, _ra = ThetaPhiToDecRa(_th, _phi)
-    print(np.rad2deg([_ra, _dec]))
-    assert _pix == map_info["bf_equ"]["pix"]
-    # Rotation should not have introduced errors > res, so within neighbour pix
-    assert np.isclose(_ra, map_info["bf_equ"]["ra"],
-                      atol=2 * hp.nside2resol(NSIDE))
-    assert np.isclose(_dec, map_info["bf_equ"]["dec"],
-                      atol=2 * hp.nside2resol(NSIDE))
-
+    cos_dists = np.clip((np.cos(_ra - bf_ra) * np.cos(_dec) * np.cos(bf_dec) +
+                         np.sin(_dec) * np.sin(bf_dec)), -1., 1.)
+    max_dist = np.amax(np.arccos(cos_dist))
+    # Rotation should not have introduced angular errors greater than the
+    # maximum distance to all nieghbour pixels
+    assert dist <= max_dist
+    # Best fit from single maps should also be the global best fit
+    assert bf_pix == map_info["bf_equ"]["pix"]
+else:
+    bf_pix = np.argmax(logl_map)
+    bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
+    # Best fit from single maps should also be the global best fit
+    assert bf_pix == map_info["bf_loc"]["pix"]
+    assert bf_phi == map_info["bf_loc"]["azi"]
+    assert bf_th == map_info["bf_loc"]["zen"]
 
 # Smooth and normalize in normal LLH space if needed
 if smooth > 0.:
