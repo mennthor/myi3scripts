@@ -208,41 +208,45 @@ for i, fi in enumerate(f):
         pix_id = frame["HealpixPixel"].value
         map_i.append(-frame["MillipedeStarting2ndPassFitParams"].logl)
         pix_ids.append(pix_id)
-
     i3f.close()
 
+    # Update verified map info
     map_info["NSIDES"].append(NSIDE)
     map_info["pixels"].append(pix_ids)
 
-    # Upscale and update map, not smoothing anything (power=0)
-    logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
+    # Set +-inf or nans to the smallest valid value to get correct BF values
     map_i = np.array(map_i)
     pix_ids = np.array(pix_ids)
+    valid = np.isfinite(map_i)
+    map_i[~valid] = np.amin(map_i[valid])
 
     # Keep track of the local best fit pixel before a possible rotation
-    bf_pix = np.argmax(logl_map)
+    bf_pix = pix_ids[np.argmax(map_i)]
     bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
     map_info["bf_loc"] = {"azi": bf_phi, "zen": bf_th, "pix": bf_pix}
     print("  Current best fit local: " +
-          u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.deg2rad(bf_phi),
-                                                     np.deg2rad(bf_th),
+          u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.rad2deg(bf_phi),
+                                                     np.rad2deg(bf_th),
                                                      bf_pix))
 
     # If we want equatorial coordinates, transform to new indices first
     if coord == "equ":
         print("  Transform {} ".format(len(pix_ids)) +
               "pixels to equatorial coordinates.")
-        pix_ids, _, _ = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
+        pix_ids = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
         # Also update accurate best fit in equatorial coordinates
-        bf_ra, bf_dec = astro.dir_to_equa(zenith=bf_th, azimuth=bf_phi, mjd=mjd)
-        bf_pix = pix_ids[np.argmax(logl_map)]
-        map_info["bf_equ"] = {"ra": bf_ra, "dec": bf_dec, "pix": bf_pix}
+        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
+                                          mjd=mjd)
+        bf_pix = rotate_to_equ_pix(NSIDE, mjd, bf_pix)[0]
+        assert bf_pix == pix_ids[np.argmax(map_i)]
+        map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
         print("    Current best fit equ: " +
-              u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.deg2rad(bf_phi),
-                                                         np.deg2rad(bf_th),
-                                                         bf_pix))
+              u"ra={:.2f}°, dec={:.2f}°, pix={}".format(np.rad2deg(bf_ra)[0],
+                                                        np.rad2deg(bf_dec)[0],
+                                                        bf_pix))
 
-    # Store map values at correct positions
+    # Upscale and update map, not smoothing anything (power=0)
+    logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
     logl_map[pix_ids] = map_i
 
 print("")
@@ -250,6 +254,24 @@ print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
 print("        Processed pixels: [{}].".format(
     ", ".join("{:d}".format(len(i)) for i in map_info["pixels"])))
+
+# Check best fit sanity
+if coord == "equ":
+    _pix = np.argmax(logl_map)
+    _th, _phi = hp.pix2ang(NSIDE, _pix)
+    _dec = np.pi / 2. - _th
+    assert _pix == map_info["bf_equ"]["pix"]
+    # Rotation should not introduce errors > 2 * res ~ inside 2 pix
+    assert np.isclose(_phi, map_info["bf_equ"]["ra"],
+                      atol=2*hp.nside2resol(NSIDE))
+    assert np.isclose(_dec, map_info["bf_equ"]["dec"],
+                      atol=2*hp.nside2resol(NSIDE))
+else:
+    _pix = np.argmax(logl_map)
+    _th, _phi = hp.pix2ang(NSIDE, _pix)
+    assert _pix == map_info["bf_loc"]["pix"]
+    assert _phi == map_info["bf_loc"]["azi"]
+    assert _th == map_info["bf_loc"]["zen"]
 
 # Smooth and normalize in normal LLH space if needed
 if smooth > 0.:
@@ -272,12 +294,13 @@ else:
     out_dict.update(ev_header)
     out_dict["map"] = list(logl_map)  # ndarray can't be serialized
     if outfmt == "json":
+        # Takes significantly more space, but is human readable and portable
         fname = outf if outf.endswith(".json") else outf + "." + outfmt
-        json.dump(out_dict, fp=open(fname, "w"), indent=1,
+        json.dump(out_dict, fp=open(fname, "w"), indent=1, sort_keys=True,
                   separators=(",", ":"))
     else:
         fname = outf if outf.endswith(".pickle") else outf + "." + outfmt
-        pickle.dump(out_dict, fp=open(fname, "w"))
+        pickle.dump(out_dict, open(fname, "w"))
 
 print("")
 print("Done. Saved map and info to:\n  {}".format(fname))
