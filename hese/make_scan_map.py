@@ -113,8 +113,9 @@ def smooth_and_norm(logl_map, smooth_sigma):
     # Normalize to sane values in [*, 0] for conversion llh = exp(logllh)
     pdf_map = np.exp(logl_map - np.amax(logl_map))
 
-    # Smooth with a gaussian kernel and fix small negative float errors
+    # Smooth with a gaussian kernel
     pdf_map = hp.smoothing(map_in=pdf_map, sigma=smooth_sigma, verbose=False)
+    # Healpy smoothing is prone to numerical erros, so fix them after smoothing
     pdf_map[pdf_map < 0.] = 0.
 
     # Normalize to PDF, integral is the sum over discrete pixels here
@@ -125,7 +126,7 @@ def smooth_and_norm(logl_map, smooth_sigma):
         pdf_map = pdf_map / norm
         assert np.isclose(np.sum(pdf_map) * dA, 1.)
     else:
-        print("!! Map norm is < 0. Returning unnormed map instead !!")
+        print("  !! Map norm is < 0. Returning unnormed map instead !!")
 
     return pdf_map
 
@@ -174,9 +175,10 @@ logl_map = np.zeros(hp.nside2npix(1), dtype=float)
 
 # Loop through files and create the healpy array. The map is build up to the
 # higest scan resolution. All others are scaled up pixel-wise
+print("")
+print("Input folder is:\n  {}".format(folder))
 for i, fi in enumerate(f):
     NSIDE = NSIDES[i]
-    print("")
     print("Working on file: {}".format(fnames[i]))
     print("  Resolution is: {}".format(NSIDE))
 
@@ -249,7 +251,6 @@ for i, fi in enumerate(f):
     logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
     logl_map[pix_ids] = map_i
 
-print("")
 print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
 print("        Processed pixels: [{}].".format(
@@ -275,7 +276,6 @@ else:
 
 # Smooth and normalize in normal LLH space if needed
 if smooth > 0.:
-    print("")
     print(u"Smoothing the map with a {:.2f}° ".format(smooth) +
           "kernel and normalize as normal space PDF.")
     logl_map = smooth_and_norm(logl_map, np.deg2rad(smooth))
@@ -284,8 +284,7 @@ if smooth > 0.:
 # Plug in for default filename if no other was given
 outf = outf.format(run_id, event_id)
 if outfmt == "npy":
-    print("")
-    print("Format is 'npy', so only the map array is saved.")
+    print("  Format is 'npy', so only the map array is saved.")
     fname = outf if outf.endswith(".npy") else outf + "." + outfmt
     np.save(fname, np.array(logl_map))
 else:
