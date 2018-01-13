@@ -9,6 +9,22 @@ Find pass2 scan files at:
 Coordinates are mapped as follows:
 - If --coord='equ': ``dec=pi/2-theta`` and ``phi=ra``.
 - If --coord='local': ``zen=theta`` and ``azi=phi``.
+
+If `--outfmt` is `json` or `pickle` then further information is saved in a
+dictionary with keys:
+- 'run_id' : Run ID of the event.
+- 'event_id' : Event ID of the event.
+- 'mjd' : MJD start tim of the event
+- 'NSIDES' : List of combined scanned resolutions.
+- 'pixels' : List of scanned pixels.
+- 'bf_loc' : Dictionary with keys:
+    + 'azi' : Azimuth of best fit pixel, in radians.
+    + 'zen' : Zenith of best fit pixel, in radians.
+    + 'pix' : Pixel ID of the best fit for the highest included resolution.
+- 'bf_equ' : Only if '--coord' is `equ`. Dictionary with keys:
+    + 'ra' : Right-ascension of best fit pixel, in radians.
+    + 'dec' : Declination of best fit pixel, in radians.
+    + 'pix' : Best fit pixel ID for the map transformed to equatorial coords.
 """
 from __future__ import print_function, division
 
@@ -63,10 +79,6 @@ def rotate_to_equ_pix(NSIDE, mjd, pix):
     -------
     pix : array-like
         New pixel indices, so that ``dec=pi/2-theta`` and ``phi=ra``.
-    ra : array-like
-        Right-ascension of the pixel positions in radian.
-    dec : array-like
-        Declination of the pixel positions in radian.
     """
     pix = np.atleast_1d(pix)
     npix = len(np.unique(pix))
@@ -78,7 +90,7 @@ def rotate_to_equ_pix(NSIDE, mjd, pix):
     if len(np.unique(pix)) != npix:
         raise RuntimeError("Rotation is not bivariate, possibly due to a " +
                            "too coarse pixelization.")
-    return pix, ra, dec
+    return pix
 
 
 def smooth_and_norm(logl_map, smooth_sigma):
@@ -164,6 +176,7 @@ logl_map = np.zeros(hp.nside2npix(1), dtype=float)
 # higest scan resolution. All others are scaled up pixel-wise
 for i, fi in enumerate(f):
     NSIDE = NSIDES[i]
+    print("")
     print("Working on file: {}".format(fnames[i]))
     print("  Resolution is: {}".format(NSIDE))
 
@@ -206,14 +219,33 @@ for i, fi in enumerate(f):
     map_i = np.array(map_i)
     pix_ids = np.array(pix_ids)
 
+    # Keep track of the local best fit pixel before a possible rotation
+    bf_pix = np.argmax(logl_map)
+    bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
+    map_info["bf_loc"] = {"azi": bf_phi, "zen": bf_th, "pix": bf_pix}
+    print("  Current best fit local: " +
+          u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.deg2rad(bf_phi),
+                                                     np.deg2rad(bf_th),
+                                                     bf_pix))
+
     # If we want equatorial coordinates, transform to new indices first
     if coord == "equ":
         print("  Transform {} ".format(len(pix_ids)) +
               "pixels to equatorial coordinates.")
         pix_ids, _, _ = rotate_to_equ_pix(NSIDE, mjd, pix_ids)
+        # Also update accurate best fit in equatorial coordinates
+        bf_ra, bf_dec = astro.dir_to_equa(zenith=bf_th, azimuth=bf_phi, mjd=mjd)
+        bf_pix = pix_ids[np.argmax(logl_map)]
+        map_info["bf_equ"] = {"ra": bf_ra, "dec": bf_dec, "pix": bf_pix}
+        print("    Current best fit equ: " +
+              u"azi={:.2f}°, zen={:.2f}°, pix={}".format(np.deg2rad(bf_phi),
+                                                         np.deg2rad(bf_th),
+                                                         bf_pix))
 
+    # Store map values at correct positions
     logl_map[pix_ids] = map_i
 
+print("")
 print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
 print("        Processed pixels: [{}].".format(
@@ -221,7 +253,8 @@ print("        Processed pixels: [{}].".format(
 
 # Smooth and normalize in normal LLH space if needed
 if smooth > 0.:
-    print("Smoothing the map with a {:.2f}deg ".format(smooth) +
+    print("")
+    print(u"Smoothing the map with a {:.2f}° ".format(smooth) +
           "kernel and normalize as normal space PDF.")
     logl_map = smooth_and_norm(logl_map, np.deg2rad(smooth))
 
@@ -229,6 +262,7 @@ if smooth > 0.:
 # Plug in for default filename if no other was given
 outf = outf.format(run_id, event_id)
 if outfmt == "npy":
+    print("")
     print("Format is 'npy', so only the map array is saved.")
     fname = outf if outf.endswith(".npy") else outf + "." + outfmt
     np.save(fname, np.array(logl_map))
@@ -245,4 +279,5 @@ else:
         fname = outf if outf.endswith(".pickle") else outf + "." + outfmt
         pickle.dump(out_dict, fp=open(fname, "w"))
 
+print("")
 print("Done. Saved map and info to:\n  {}".format(fname))
