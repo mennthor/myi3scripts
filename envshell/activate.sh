@@ -1,6 +1,5 @@
 ################################################################################
 ## This is a mashup between virtualenvs activate script and icetrays env-shell.
-## Last edit: 2017, Dec 27th
 ##
 ## It prevents all bash settings by storing them in '_I3OLD_*' variables and
 ## only changes the paths so that icetray can be found. After calling the new
