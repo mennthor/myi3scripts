@@ -4,6 +4,9 @@
 Additonal script to `make_scan_map.py` to save some time.
 If lnLLH maps were created without smoothing, this script only applies smoothing
 to the normal space version of the input map and normalizes it to a PDF.
+
+Find pass2 scan files at:
+    /data/ana/Diffuse/HESE/Pass2_reconstruction/reconstruction_tracks
 """
 from __future__ import print_function, division
 
