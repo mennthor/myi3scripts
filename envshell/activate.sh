@@ -117,6 +117,8 @@ if [ -z "$I3_SHELL" ]  ; then
     # Get the SVN revision this project was (probably) compiled against
     # (wrong if SVN was updated but not recompiled yet...)
     _REVISION="$( cd "$_I3_SRC" && svn info | grep Revision | awk '{print $2}' )"
+    _PROJ=$(svn info | grep 'URL: http' | awk {'print $2'})
+    _PROJ=${_PROJ#*meta-projects/}
 
     # Get python version
     _PYVER=`python -V 2>&1`
@@ -202,7 +204,7 @@ if [ -z "$I3_SHELL" ]  ; then
         printctr ""
         printctr "W E L C O M E  to  I C E T R A Y"
         printctr ""
-        printctr "Version combo.trunk      r$_REVISION"
+        printctr " Version $_PROJ     r$_REVISION"
         printctr ""
         printf "$TOPBAR\n"
         # printf "\n"
@@ -239,6 +241,7 @@ if [ -z "$I3_SHELL" ]  ; then
     unset _DYLD_LIBRARY_PATH
     unset _ROOTSYS
     unset _REVISION
+    unset _PROJ
 
     unset _DIRNAME
     unset _NOPS1
