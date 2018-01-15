@@ -214,8 +214,6 @@ map_info = {"NSIDES": [], "pixels": []}
 
 # Start with the lowest possible resolution
 logl_map = np.zeros(hp.nside2npix(1), dtype=float)
-if coord == "equ":
-    equ_map = np.zeros(hp.nside2npix(1), dtype=float)
 
 # Loop through files and create the healpy array. The map is build up to the
 # highest scan resolution. All others are scaled up pixel-wise
@@ -284,40 +282,23 @@ for i, fi in enumerate(f):
     logl_map = hp.ud_grade(map_in=logl_map, nside_out=NSIDE, power=0)
     logl_map[pix_ids] = map_vals
 
-    # If we want equatorial coordinates, transform to new indices
-    # Note: This iterative procedure only saves time, because it avoids
-    # transforming the final high res map, which is slow with astro. This is not
-    # a approximation as long as more than the original scan pixels are selected
-    if coord == "equ":
-        # Get best fit exact trafo
-        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
-                                          mjd=mjd)
+# If we want equatorial coordinates, transform map to new indices
+if coord == "equ":
+    # Get best fit exact trafo
+    bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
+                                      mjd=mjd)
 
-        # If in the first iteration, select all pixels to build the base map
-        if i == 0:
-            npix = NPIX + 1
-            print("  Transform all pixels to equatorial coordinates.")
-        else:
-            # This must be larger than the number of original HESE subscan
-            # pixels to be exact, which is currently eyeballed to < 1000.
-            # If all pixel shall be used (takes very long) use npix = NPIX + 1
-            npix = NPIX + 1
-            print("  Transform {} ".format(npix) +
-                  "pixels to equatorial coordinates.")
+    # Select all pixels for transformation -> most accurate for low res bins
+    print("Transform local map to equatorial coordinates.")
+    npix = NPIX + 1
+    pix_ids, map_vals = rotate_to_equ_pix(NSIDE, logl_map, bf_ra, bf_dec,
+                                          mjd, npix=npix)
+    logl_map[pix_ids] = map_vals
 
-        pix_ids, map_vals = rotate_to_equ_pix(NSIDE, logl_map, bf_ra, bf_dec,
-                                              mjd, npix=npix)
-
-        # Upscale and update old map. Keep the values invariant (power=0)
-        equ_map = hp.ud_grade(map_in=equ_map, nside_out=NSIDE, power=0)
-        equ_map[pix_ids] = map_vals
-
-        bf_pix = pix_ids[np.argmax(map_vals)]
-        map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
-        print("  Current best fit equ: " +
-              u"ra={:.2f}°, dec={:.2f}°, pix={}".format(
-                  np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
-
+    bf_pix = pix_ids[np.argmax(map_vals)]
+    map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
+    print("  Best fit equ: ra={:.2f}°, dec={:.2f}°, pix={}".format(
+          np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
 
 print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
@@ -326,9 +307,7 @@ print("        Processed pixels: [{}].".format(
 
 # Check best fit sanity
 if coord == "equ":
-    # Only save equatorial map in the end
-    logl_map = equ_map
-    # Get best fit values from map and compare to accurate trafo
+    # Get best fit values from map and compare to accurate best fit trafo
     bf_pix = np.argmax(logl_map)
     bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
     bf_dec, bf_ra = ThetaPhiToDecRa(bf_th, bf_phi)
