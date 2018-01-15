@@ -194,7 +194,7 @@ parser.add_argument("--smooth", type=smooth_type, default=0.,
                     "integral over the unit sphere is one. Default: 0.")
 args = parser.parse_args()
 
-folder = os.path.abspath(args.folder)
+folder = os.path.abspath(os.path.expandvars(os.path.expanduser(args.folder)))
 outf = os.path.abspath(os.path.expandvars(os.path.expanduser(args.outf)))
 outfmt = args.outfmt
 coord = args.coord
@@ -354,14 +354,15 @@ else:
     out_dict = {}
     out_dict.update(map_info)
     out_dict.update(ev_header)
-    out_dict["map"] = list(logl_map)  # ndarray can't be serialized
     if outfmt == "json":
         # Takes significantly more space, but is human readable and portable
+        out_dict["map"] = list(logl_map)  # ndarray can't be JSON serialized
         fname = outf if outf.endswith(".json") else outf + "." + outfmt
         json.dump(out_dict, fp=open(fname, "w"), indent=1, sort_keys=True,
                   separators=(",", ":"))
     else:
+        out_dict["map"] = logl_map
         fname = outf if outf.endswith(".pickle") else outf + "." + outfmt
         pickle.dump(out_dict, open(fname, "w"))
 
-print("Done. Saved map and info to:\n  {}".format(fname))
+print("Done. Saved map to:\n  {}".format(fname))
