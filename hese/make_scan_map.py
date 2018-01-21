@@ -269,7 +269,7 @@ if coord == "equ":
     bf_pix = np.argmax(logl_map)
     bf_pix_ra, bf_pix_dec = ThetaPhiToDecRa(*hp.pix2ang(NSIDE, bf_pix))
     map_info["bf_equ_pix"] = {"ra": bf_pix_ra[0], "dec": bf_pix_dec[0],
-    "pix": bf_pix}
+                              "pix": bf_pix}
     print("  Best fit equ pix: ra={:.2f}°, dec={:.2f}°, pix={}".format(
           np.rad2deg(bf_pix_ra)[0], np.rad2deg(bf_pix_dec)[0], bf_pix))
 
