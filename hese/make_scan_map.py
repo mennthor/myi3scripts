@@ -63,7 +63,7 @@ def smooth_type(x):
     return x
 
 
-def rotate_to_equ_pix(NSIDE, m, bf_ra, bf_dec, mjd, npix=1000):
+def local_to_equatorial(m, mjd):
     """
     Uses a set of pixel IDs for a given resolution NSIDE and transforms local
     to equatorial coordinates. Then returns the new map indices where now the
@@ -71,22 +71,12 @@ def rotate_to_equ_pix(NSIDE, m, bf_ra, bf_dec, mjd, npix=1000):
     We can then just use the map as is for equatorial coords by simply
     tranforming ``dec=pi/2-theta``.
 
-    Note: We have to do the process backwards in order to save time and we have
-    interpolate values, because in when rotating in declination, we don't map
-    bivariate as the number of pixels in a dec band varies with declination.
-    So we select 1000 pixels (saves time) around the best fit (approx. what is
-    hardcoded in the scan scripts) in exact pixel equatorial coordinates and
-    rotate them back to local coordinates. Then we get the interpolated local
-    map values for these pixels and store them in the equatorial map.
-
-    The advantage is, that we don't have to convert the coordinates every time
-    we want use the equatorial map, but need only to do the simple
-    ``dec = pi / 2 - theta`` transformation by using the transformed maps.
+    Note: We have to do the process backwards so we have to interpolate values,
+    because when rotating in declination, we don't map pixels in a bivariate
+    fashion as the number of pixels in a dec band varies with declination.
 
     Parameters
     ----------
-    NSIDE : int
-        Healpy map resolution.
     m : array-like
         Healpy map in local coordinates.
     bf_ra, bf_dec : float
@@ -99,40 +89,22 @@ def rotate_to_equ_pix(NSIDE, m, bf_ra, bf_dec, mjd, npix=1000):
 
     Returns
     -------
-    pix : array-like
-        New pixel indices, so that ``dec=pi/2-theta`` and ``phi=ra``.
-    vals : array-like
-        Map values to fill at the pix indices.
+    m : array-like
+        Rotated map so that ``dec=pi/2-theta`` and `ra=phi``.
     """
+    NSIDE = hp.get_nside(m)
     NPIX = hp.nside2npix(NSIDE)
-    if NPIX <= npix:
-        # If we don't have enough pixels to select, select the whole map
-        pix = np.arange(NPIX)
-    else:
-        # Select npix pixels around the best fit
-        bf_th, bf_phi = DecRaToThetaPhi(bf_dec, bf_ra)
-        bf_vec = hp.ang2vec(bf_th, bf_phi)[0]
-
-        def f(rad):
-            """ Find radius, where query_disc selects npix. """
-            cur_npix = len(hp.query_disc(NSIDE, bf_vec, rad, inclusive=False))
-            return npix - cur_npix
-
-        # Select using the optimized radius for npix pixels
-        rad = brentq(f=f, a=0., b=2 * np.pi)
-        pix = hp.query_disc(NSIDE, bf_vec, rad)
-        print("  Selected {} pixels within ".format(len(pix)) +
-              u"{:.2f}° around best fit.".format(np.rad2deg(rad)))
 
     # Make accurate ra, dec coordinates from selected pixels
+    pix = np.arange(NPIX)
     th, phi = hp.pix2ang(NSIDE, pix)
     dec, ra = ThetaPhiToDecRa(th, phi)
 
     # Transform to local coordinates and get interpolated map values to avoid
     # non-bivariat mapping of discrete pixels
     zen, azi = astro.equa_to_dir(ra=ra, dec=dec, mjd=mjd)
-    vals = hp.get_interp_val(m, zen, azi)
-    return pix, vals
+    m = hp.get_interp_val(m, theta=zen, phi=azi)
+    return m
 
 
 def smooth_and_norm(logl_map, smooth_sigma):
@@ -284,21 +256,22 @@ for i, fi in enumerate(f):
 
 # If we want equatorial coordinates, transform map to new indices
 if coord == "equ":
-    # Get best fit exact trafo
-    bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
-                                      mjd=mjd)
+    print("Transform complete local map to equatorial coordinates.")
+    logl_map = local_to_equatorial(logl_map, mjd)
 
-    # Select all pixels for transformation -> most accurate for low res bins
-    print("Transform local map to equatorial coordinates.")
-    npix = NPIX + 1
-    pix_ids, map_vals = rotate_to_equ_pix(NSIDE, logl_map, bf_ra, bf_dec,
-                                          mjd, npix=npix)
-    logl_map[pix_ids] = map_vals
-
-    bf_pix = pix_ids[np.argmax(map_vals)]
-    map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0], "pix": bf_pix}
-    print("  Best fit equ: ra={:.2f}°, dec={:.2f}°, pix={}".format(
-          np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0], bf_pix))
+    # Get exact transformation for the local best fit pixel
+    bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi], mjd=mjd)
+    map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0]}
+    print("  Best fit equ    : ra={:.2f}°, dec={:.2f}°".format(
+          np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0]))
+    # Also store the best fit pixel in the new equatorial map, which might be
+    # slightly off due to interpolation
+    bf_pix = np.argmax(logl_map)
+    bf_pix_ra, bf_pix_dec = ThetaPhiToDecRa(*hp.pix2ang(NSIDE, bf_pix))
+    map_info["bf_equ_pix"] = {"ra": bf_pix_ra[0], "dec": bf_pix_dec[0],
+    "pix": bf_pix}
+    print("  Best fit equ pix: ra={:.2f}°, dec={:.2f}°, pix={}".format(
+          np.rad2deg(bf_pix_ra)[0], np.rad2deg(bf_pix_dec)[0], bf_pix))
 
 print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
                                                          for i in NSIDES)))
@@ -307,6 +280,12 @@ print("        Processed pixels: [{}].".format(
 
 # Check best fit sanity
 if coord == "equ":
+    # Note:  This might fail, when the smoothed map BF differs quite a lot from
+    # the unsmoothed logl BF. This might happen, if the best fit pixel is quite
+    # isolated. Then it's value is smoothed down and a different region may
+    # emerge as the best fit region, which is then also the modus in the prior
+    # PDF map.
+
     # Get best fit values from map and compare to accurate best fit trafo
     bf_pix = np.argmax(logl_map)
     bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
