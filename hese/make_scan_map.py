@@ -32,6 +32,7 @@ import os
 import argparse
 import re
 import json
+import gzip
 import cPickle as pickle
 from glob import glob
 import numpy as np
@@ -337,11 +338,13 @@ else:
         # Takes significantly more space, but is human readable and portable
         out_dict["map"] = list(logl_map)  # ndarray can't be JSON serialized
         fname = outf if outf.endswith(".json") else outf + "." + outfmt
-        json.dump(out_dict, fp=open(fname, "w"), indent=1, sort_keys=True,
-                  separators=(",", ":"))
+        with gzip.open(fname, "wb") as _outfile:
+            json.dump(out_dict, fp=_outfile, indent=1, sort_keys=True,
+                      separators=(",", ":"))
     else:
         out_dict["map"] = logl_map
         fname = outf if outf.endswith(".pickle") else outf + "." + outfmt
-        pickle.dump(out_dict, open(fname, "w"))
+        with open(fname) as _outfile:
+            pickle.dump(out_dict, _outfile)
 
 print("Done. Saved map to:\n  {}".format(fname))
