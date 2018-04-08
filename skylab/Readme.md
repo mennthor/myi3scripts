@@ -1,0 +1,1 @@
+Outdated attempt for using healpy templates for point sources with uncertain position.
