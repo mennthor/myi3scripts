@@ -59,7 +59,7 @@ def smooth_and_norm_healpy_map(logl_map, smooth_sigma=None):
     Parameters
     ----------
     logl_map : array-like
-    ealpy map array.
+        healpy map array with logLLH values.
     smooth_sigma : float or None, optional
         Width in sigma of gaussian smoothing kernel, must be ``>0.``.
         (default: None)
