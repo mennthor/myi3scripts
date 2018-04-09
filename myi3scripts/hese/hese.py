@@ -14,7 +14,7 @@ import healpy as hp
 from icecube import dataclasses, millipede, astro
 from icecube.dataio import I3File
 
-from ..healpy import theta_phi_to_dec_ra, cos_dist_equ
+from ..healpy import theta_phi_to_dec_ra
 from ..healpy import healpy_map_loc_to_equa, smooth_and_norm_healpy_map
 from ..misc import arr2str
 
@@ -64,12 +64,16 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
             + 'dec' : Declination of best fit pixel, in radians.
             + 'pix' : Best fit pixel ID for the map transformed to equatorial
               coords.
-        JSON files are compressed with gzip to save space. (default: 'json')
+        JSON files are compressed with gzip to save space, use
+        ``gzip -d filename`` to extract in terminal or the ``gzip`` module to
+        load them directly in python. (default: 'json')
     smooth_sigma : float or None, optional
-        Optional smoothing kernel width in degree. Originally, this was 1° for
-        tracks and 30° for cascades to guess the influence of unknown
-        systematics in the millipede scans. Gets passed to
-        ``smooth_and_norm_healpy_map``. (default: ``None``)
+        Optional smoothing kernel width in degree, smoothing get applied at the
+        last step if requested. Originally, this was 1° for tracks and 30° for
+        cascades to guess the influence of unknown systematics in the millipede
+        scans. Gets passed to ``smooth_and_norm_healpy_map``. Because smoothing
+        is applied in noraml space, the map is normalized so that the integral
+        over the unit sphere is 1 afterwards. (default: ``None``)
 
     Returns
     -------
@@ -81,6 +85,9 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
         raise ValueError("`coord` must be one of 'equ', 'local'.")
     if outfmt not in ["json", "npy", "pickle"]:
         raise ValueError("`outfmt` must be one of 'json', 'npy' or 'pickle'.")
+    if smooth_sigma is not None:
+        if not smooth_sigma > 0.:
+            smooth_sigma = None
 
     infolder = os.path.abspath(os.path.expandvars(os.path.expanduser(infolder)))
     outf = os.path.abspath(os.path.expandvars(os.path.expanduser(outfile)))
@@ -91,10 +98,10 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
     fnames = map(os.path.basename, f)
     NSIDES = map(lambda s: int(re.search("nside([0-9]{4})", s).group(1)),
                  fnames)
-    print("")
+
     print("Input folder is:\n  {}".format(infolder))
     print("Found scan files:\n  {}".format(arr2str(fnames)))
-    print("  - Healpy resolutions: {}".format(arr2str(NSIDES), fmt="{:d}"))
+    print("  Healpy resolutions: {}".format(arr2str(NSIDES), fmt="{:d}"))
 
     # Prepare scan and map info dicts
     ev_header = {"run_id": None, "event_id": None, "mjd": None}
@@ -109,7 +116,7 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
         NSIDE = NSIDES[i]
         NPIX = hp.nside2npix(NSIDE)
         print("Working on file: {}".format(fnames[i]))
-        print("  - Resolution is: {}".format(NSIDE))
+        print("  Resolution is: {}".format(NSIDE))
 
         # Open the i3 file and get logl info at the pixels
         i3f = I3File(fi)
@@ -174,71 +181,48 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
         logl_map = healpy_map_loc_to_equa(logl_map, mjd)
 
         # Get exact transformation for the local best fit pixel
-        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi], mjd=mjd)
+        bf_ra, bf_dec = astro.dir_to_equa(zenith=[bf_th], azimuth=[bf_phi],
+                                          mjd=mjd)
         map_info["bf_equ"] = {"ra": bf_ra[0], "dec": bf_dec[0]}
         print("  Best fit equ    : ra={:.2f}°, dec={:.2f}°".format(
               np.rad2deg(bf_ra)[0], np.rad2deg(bf_dec)[0]))
-        # Also store the best fit pixel in the new equatorial map, which might be
-        # slightly off due to interpolation
+        # Also store the best fit pixel in the new equatorial map, which might
+        # be a bit off to the directly converted local pix due to interpolation
         bf_pix = np.argmax(logl_map)
-        bf_pix_ra, bf_pix_dec = theta_phi_to_dec_ra(*hp.pix2ang(NSIDE, bf_pix))
-        map_info["bf_equ_pix"] = {"ra": bf_pix_ra[0], "dec": bf_pix_dec[0],
+        bf_pix_dec, bf_pix_ra = theta_phi_to_dec_ra(*hp.pix2ang(NSIDE, bf_pix))
+        map_info["bf_equ_pix"] = {"ra": bf_pix_ra, "dec": bf_pix_dec,
                                   "pix": bf_pix}
-        print("  Best fit equ pix: ra={:.2f}°, dec={:.2f}°, pix={}".format(
-              np.rad2deg(bf_pix_ra)[0], np.rad2deg(bf_pix_dec)[0], bf_pix))
+        print("  Best fit equ pix: ra={:.2f}°, dec={:.2f}°, pix={:d}".format(
+              np.rad2deg(bf_pix_ra), np.rad2deg(bf_pix_dec), bf_pix))
 
-    print("Combined map with NSIDES: [{}].".format(", ".join("{:d}".format(i)
-                                                             for i in NSIDES)))
+    print("Combined map with NSIDES: [{}].".format(arr2str(NSIDES)))
     print("        Processed pixels: [{}].".format(
-        ", ".join("{:d}".format(len(i)) for i in map_info["pixels"])))
-
-    # Check best fit sanity
-    if coord == "equ":
-        # Note: This might fail, when the smoothed map best fit strongly differs
-        # from the unsmoothed logl best fit. This might happen, if the best fit
-        # pixel is very isolated. Then it's value is smoothed down and a
-        # different region may emerge as the best fit region, which is then also
-        # the new max Likelihood region in the prior PDF map.
-
-        # Get best fit values from map and compare to accurate best fit trafo
-        bf_pix = np.argmax(logl_map)
-        bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
-        bf_dec, bf_ra = theta_phi_to_dec_ra(bf_th, bf_phi)
-        # Get best accurate best fit to pixel best fit distance
-        ra0, dec0 = map_info["bf_equ"]["ra"], map_info["bf_equ"]["dec"]
-        cos_dist = cos_dist_equ(ra0, dec0, bf_ra, bf_dec)
-        # cos_dist = (np.cos(bf_ra - ra0) * np.cos(bf_dec) * np.cos(dec0) +
-        #             np.sin(bf_dec) * np.sin(dec0))
-        # cos_dist = np.clip(cos_dist, -1., 1.)
-        dist = np.arccos(cos_dist)
-
-        # Get max neighbour distance to get the allowed deviation
-        _th, _phi = hp.pix2ang(NSIDES[-1], hp.get_all_neighbours(
-            nside=NSIDES[-1], theta=bf_th, phi=bf_phi))
-        _dec, _ra = theta_phi_to_dec_ra(_th, _phi)
-        cos_dist = cos_dist_equ(_ra, _dec, bf_ra, bf_dec)
-        # cos_dist = np.clip((np.cos(_ra - bf_ra) * np.cos(_dec) * np.cos(bf_dec) +
-        #                      np.sin(_dec) * np.sin(bf_dec)), -1., 1.)
-        max_dist = np.amax(np.arccos(cos_dist))
-        # Rotation should not have introduced angular errors greater than the
-        # maximum distance to all neighbour pixels
-        assert dist <= max_dist
-        # Best fit from single maps should also be the global best fit
-        assert bf_pix == map_info["bf_equ"]["pix"]
-    else:
-        bf_pix = np.argmax(logl_map)
-        bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
-        # Best fit from single maps should also be the global best fit
-        assert bf_pix == map_info["bf_loc"]["pix"]
-        assert bf_phi == map_info["bf_loc"]["azi"]
-        assert bf_th == map_info["bf_loc"]["zen"]
+        arr2str(map(len, map_info["pixels"]))))
 
     # Smooth and normalize in normal LLH space if needed
-    if smooth_sigma > 0.:
-        print(u"Smoothing the map with a {:.2f}° ".format(smooth_sigma) +
+    map_info["smooth_sigma"] = smooth_sigma
+    if smooth_sigma is not None:
+        print("Smoothing the map with a {:.2f}deg ".format(smooth_sigma) +
               "kernel and normalize as normal space PDF.")
         logl_map = smooth_and_norm_healpy_map(logl_map,
                                               np.deg2rad(smooth_sigma))
+        # Store smoothed map maximum info
+        bf_pix = np.argmax(logl_map)
+        bf_th, bf_phi = hp.pix2ang(NSIDE, bf_pix)
+        if coord == "equ":
+            bf_pix_dec, bf_pix_ra = theta_phi_to_dec_ra(bf_th, bf_phi)
+            map_info["bf_equ_smooth_pix"] = {
+                "ra": bf_pix_ra, "dec": bf_pix_dec, "pix": bf_pix}
+        else:
+            map_info["bf_loc_smooth_pix"] = {
+                "azi": bf_phi, "zen": bf_th, "pix": bf_pix}
+
+    # Store info on how map was built
+    info = "Further map processing steps in order: "
+    info += "1. Trafo to equatorial coordinates: {}. ".format(coord == "equ")
+    info += "2. Smoothed in normal space and normalized to PDF map: {}.".format(
+        smooth_sigma is not None)
+    map_info["processing"] = info
 
     # Save in specified format with additional dict infos
     if outfmt == "npy":
@@ -250,9 +234,10 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
         out_dict.update(map_info)
         out_dict.update(ev_header)
         if outfmt == "json":
-            # Takes significantly more space, but is human readable and portable
+            # Is human readable, portable ang takes not much more space gzipped
             out_dict["map"] = list(logl_map)  # ndarray can't be JSON serialized
             fname = outf if outf.endswith(".json") else outf + "." + outfmt
+            fname += ".gz"
             with gzip.open(fname, "wb") as _outfile:
                 json.dump(out_dict, fp=_outfile, indent=1, sort_keys=True,
                           separators=(",", ":"))
@@ -262,4 +247,4 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
             with open(fname) as _outfile:
                 pickle.dump(out_dict, _outfile)
 
-    print("Done. Saved map to:\n  {}".format(fname))
+    print("Done. Saved map to:\n  {}\n".format(fname))
