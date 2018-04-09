@@ -100,12 +100,11 @@ def make_healpy_map_from_HESE_scan(infolder, scan_file_str, outfile,
                  fnames)
 
     print("Input folder is:\n  {}".format(infolder))
+    if len(fnames) == 0:
+        print("No scan files found, doing nothing.\n")
+        return
     print("Found scan files:\n  {}".format(arr2str(fnames)))
     print("  Healpy resolutions: {}".format(arr2str(NSIDES), fmt="{:d}"))
-
-    if len(fnames) == 0:
-        print("No scan files found, doing nothing.")
-        return
 
     # Prepare scan and map info dicts
     ev_header = {"run_id": None, "event_id": None, "mjd": None}
