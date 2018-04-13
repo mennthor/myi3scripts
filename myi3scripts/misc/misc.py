@@ -13,6 +13,38 @@ def arr2str(arr, sep=", ", fmt="{}"):
     return sep.join([fmt.format(v) for v in arr])
 
 
+def indent_wrap(s, indent=0, wrap=80):
+    """
+    Wraps and indents a string ``s``.
+
+    Parameters
+    ----------
+    s : str
+        The string to wrap.
+    indent : int
+        How far to indent each new line.
+    wrape : int
+        Number of character after which to wrap the string.
+
+    Returns
+    -------
+    s : str
+        Indented and wrapped string, each line has length ``wrap``, except the
+        last one, which may have less than ``wrap`` characters.
+
+    Example
+    -------
+    >>> s = 2 * "abcdefghijklmnopqrstuvwxyz"
+    >>> indent_wrap(s, indent=0, wrap=26)
+    'abcdefghijklmnopqrstuvwxyz\nabcdefghijklmnopqrstuvwxyz'
+    >>> indent_wrap(s, indent=2, wrap=26)
+    '  abcdefghijklmnopqrstuvwx\n  yzabcdefghijklmnopqrstuv\n  wxyz'
+    """
+    split = wrap - indent
+    chunks = [indent * " " + s[i:i + split] for i in range(0, len(s), split)]
+    return "\n".join(chunks)
+
+
 def serialize_ndarrays(d):
     """
     Recursively traverse through iterable object ``d`` and convert all occuring
